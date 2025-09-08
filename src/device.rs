@@ -483,6 +483,15 @@ impl UsbDevice {
                         let mut handler = lock.lock().unwrap();
                         handler.handle_urb(transfer_buffer_length, setup_packet, out_data)
                     }
+                    (0b10000000, Some(GetStatus)) => {
+                        Ok(vec![0x00,0x00])
+                    }
+                    (0b10000001, Some(GetStatus)) => {
+                        Ok(vec![0x00,0x00])
+                    }
+                    (0b10000010, Some(GetStatus)) => {
+                        Ok(vec![0x00,0x00])
+                    }
                     _ => unimplemented!("control in"),
                 }
             }
