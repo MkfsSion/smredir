@@ -7,6 +7,7 @@ pub struct UsbInterface {
     pub interface_class: u8,
     pub interface_subclass: u8,
     pub interface_protocol: u8,
+    pub interface_number: u8,
     pub endpoints: Vec<UsbEndpoint>,
     pub string_interface: u8,
     pub class_specific_descriptor: Vec<u8>,
@@ -32,6 +33,19 @@ pub trait UsbInterfaceHandler: std::fmt::Debug {
         setup: SetupPacket,
         req: &[u8],
     ) -> Result<Vec<u8>>;
+
+    fn handle_device_urb(
+        &mut self,
+        _transfer_buffer_length: u32,
+        _setup: SetupPacket,
+        _req: &[u8],
+    ) -> std::io::Result<Vec<u8>> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Not implemented"))
+    }
+
+    fn get_device_capability_descriptors(&self) -> Vec<Vec<u8>> {
+        vec![]
+    }
 
     /// Helper to downcast to actual struct
     ///

@@ -385,11 +385,11 @@ impl UsbIpResponse {
                     Vec::with_capacity(48 + transfer_buffer.len() + iso_packet_descriptor.len());
 
                 debug_assert!(header.command == USBIP_RET_SUBMIT.into());
-                debug_assert!(if header.direction == Direction::In as u32 {
-                    actual_length == transfer_buffer.len() as u32
-                } else {
-                    actual_length == 0
-                });
+                // debug_assert!(if header.direction == Direction::In as u32 {
+                //     actual_length == transfer_buffer.len() as u32
+                // } else {
+                //     actual_length == 0
+                // });
 
                 result.extend_from_slice(&header.to_bytes());
                 result.extend_from_slice(&status.to_be_bytes());

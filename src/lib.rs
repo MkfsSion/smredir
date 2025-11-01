@@ -1,5 +1,6 @@
 //! A library for running a USB/IP server
 
+use nusb::MaybeFuture;
 use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -58,7 +59,7 @@ impl UsbIpServer {
     pub fn with_nusb_devices(nusb_device_infos: Vec<nusb::DeviceInfo>) -> Vec<UsbDevice> {
         let mut devices = vec![];
         for device_info in nusb_device_infos {
-            let dev = match device_info.open() {
+            let dev = match device_info.open().wait() {
                 Ok(dev) => dev,
                 Err(err) => {
                     warn!("Impossible to open device {device_info:?}: {err}, ignoring device",);
@@ -78,7 +79,7 @@ impl UsbIpServer {
             for intf in cfg.interfaces() {
                 // ignore alternate settings
                 let intf_num = intf.interface_number();
-                let intf = dev.claim_interface(intf_num).unwrap();
+                let intf = dev.claim_interface(intf_num).wait().unwrap();
                 let alt_setting = intf.descriptors().next().unwrap();
                 let mut endpoints = vec![];
 
@@ -99,27 +100,44 @@ impl UsbIpServer {
                     interface_class: alt_setting.class(),
                     interface_subclass: alt_setting.subclass(),
                     interface_protocol: alt_setting.protocol(),
+                    interface_number: interfaces.len() as u8,
                     endpoints,
-                    string_interface: alt_setting.string_index().unwrap_or(0),
+                    string_interface: alt_setting.string_index().map(|v|v.get()).unwrap_or(0),
                     class_specific_descriptor: Vec::new(),
                     handler,
                 });
             }
-            let mut device = UsbDevice {
-                path: format!(
+
+            let path;
+            #[cfg(target_os = "windows")] {
+                path = device_info.instance_id().to_string_lossy().to_string();
+            }
+            #[cfg(not(target_os = "windows"))] {
+                path = format!(
                     "/sys/bus/{}/{}/{}",
-                    device_info.bus_number(),
+                    device_info.busnum(),
                     device_info.device_address(),
                     0
-                ),
-                bus_id: format!(
-                    "{}-{}-{}",
-                    device_info.bus_number(),
-                    device_info.device_address(),
-                    0,
-                ),
-                bus_num: device_info.bus_number() as u32,
-                dev_num: 0,
+                );
+            }
+
+            let bus_num;
+            #[cfg(target_os = "windows")] {
+                bus_num = match device_info.port_chain() {
+                    v if v.len() > 1 => v[v.len()-2],
+                    _ => 0,
+                }
+            }
+
+            #[cfg(not(target_os = "windows"))] {
+                bus_num = device_info.busnum;
+            }
+
+            let mut device = UsbDevice {
+                path,
+                bus_id: device_info.bus_id().to_string(),
+                bus_num: bus_num as u32,
+                dev_num: device_info.device_address() as u32,
                 speed: device_info.speed().unwrap() as u32,
                 vendor_id: device_info.vendor_id(),
                 product_id: device_info.product_id(),
@@ -223,6 +241,7 @@ impl UsbIpServer {
                     interface_class: intf_desc.class_code(),
                     interface_subclass: intf_desc.sub_class_code(),
                     interface_protocol: intf_desc.protocol_code(),
+                    interface_number: interfaces.len() as u8,
                     endpoints,
                     string_interface: intf_desc.description_string_index().unwrap_or(0),
                     class_specific_descriptor: Vec::from(intf_desc.extra()),
@@ -487,9 +506,28 @@ pub async fn handler<T: AsyncReadExt + AsyncWriteExt + Unpin>(
                                 if out {
                                     trace!("<-Wrote {}", data.len());
                                 } else {
-                                    trace!("<-Resp {resp:02x?}");
+                                    trace!("<-Resp {resp:02x?}, len={}", resp.len());
                                 }
-                                UsbIpResponse::usbip_ret_submit_success(&header, 0, 0, resp, vec![])
+                                let mut response = UsbIpResponse::usbip_ret_submit_success(&header, 0, 0, resp, vec![]);
+                                // For OUT (host to device) transfer, actual_length should be bytes consumed
+                                // Set actuaal length to zero result in retransmission of same packet
+                                if out {
+                                    match &mut response {
+                                        UsbIpResponse::UsbIpRetSubmit { actual_length, ..} => {
+                                            *actual_length = data.len() as u32;
+                                        }
+                                        _ => ()
+                                    }
+                                }
+                                // if !out && (ep.attributes & EndpointAttributes::Interrupt as u8) != 0 {
+                                //     match &mut response {
+                                //         UsbIpResponse::UsbIpRetSubmit { actual_length, ..} => {
+                                //             *actual_length = transfer_buffer_length as u32;
+                                //         }
+                                //         _ => ()
+                                //     }
+                                // }
+                                response
                             }
                             Err(err) => {
                                 warn!("Error handling URB: {err}");

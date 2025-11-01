@@ -173,11 +173,12 @@ impl UsbDevice {
         old
     }
 
-    pub fn with_interface(
+    pub fn with_interface_and_number(
         mut self,
         interface_class: u8,
         interface_subclass: u8,
         interface_protocol: u8,
+        interface_number: u8,
         name: Option<&str>,
         endpoints: Vec<UsbEndpoint>,
         handler: Arc<Mutex<Box<dyn UsbInterfaceHandler + Send>>>,
@@ -188,12 +189,34 @@ impl UsbDevice {
             interface_class,
             interface_subclass,
             interface_protocol,
+            interface_number,
             endpoints,
             string_interface,
             class_specific_descriptor,
             handler,
         });
         self
+    }
+
+    pub fn with_interface(
+        self,
+        interface_class: u8,
+        interface_subclass: u8,
+        interface_protocol: u8,
+        name: Option<&str>,
+        endpoints: Vec<UsbEndpoint>,
+        handler: Arc<Mutex<Box<dyn UsbInterfaceHandler + Send>>>,
+    ) -> Self {
+        let id = self.interfaces.len() as u8;
+        self.with_interface_and_number(
+            interface_class,
+            interface_subclass,
+            interface_protocol,
+            id,
+            name,
+            endpoints,
+            handler,
+        )
     }
 
     pub fn with_device_handler(
@@ -291,7 +314,9 @@ impl UsbDevice {
         match (FromPrimitive::from_u8(ep.attributes), ep.direction()) {
             (Some(Control), In) => {
                 // control in
-                debug!("Control IN setup={setup_packet:x?}");
+                debug!(
+                    "Control IN setup={setup_packet:x?}, transfer_buffer_length={transfer_buffer_length}"
+                );
                 match (
                     setup_packet.request_type,
                     FromPrimitive::from_u8(setup_packet.request),
@@ -331,12 +356,30 @@ impl UsbDevice {
                             }
                             Some(BOS) => {
                                 debug!("Get BOS descriptor");
+
                                 let mut desc = vec![
                                     0x05,      // bLength
                                     BOS as u8, // bDescriptorType: BOS
                                     0x05, 0x00, // wTotalLength
                                     0x00, // bNumCapabilities
                                 ];
+                                if self.device_handler.is_some() {
+                                    // Forward BOS descriptor to device
+                                    match self
+                                        .device_handler
+                                        .as_ref()
+                                        .unwrap()
+                                        .lock()
+                                        .unwrap()
+                                        .handle_urb(transfer_buffer_length, setup_packet, out_data)
+                                    {
+                                        Ok(v) => desc = v,
+                                        Err(e) => error!(
+                                            "Device handler failed to handle GET_DESCRIPTOR for BOS descriptor, fallback to default: {}",
+                                            e
+                                        ),
+                                    }
+                                }
 
                                 // requested len too short: wLength < real length
                                 if setup_packet.length < desc.len() as u16 {
@@ -358,11 +401,12 @@ impl UsbDevice {
                                     0x80, // bmAttributes: Bus Powered
                                     0x32, // bMaxPower: 100mA
                                 ];
+                                #[allow(unused_variables)]
                                 for (i, intf) in self.interfaces.iter().enumerate() {
                                     let mut intf_desc = vec![
                                         0x09,                       // bLength
                                         Interface as u8,            // bDescriptorType: Interface
-                                        i as u8,                    // bInterfaceNum
+                                        intf.interface_number,      // bInterfaceNum
                                         0x00,                       // bAlternateSettings
                                         intf.endpoints.len() as u8, // bNumEndpoints
                                         intf.interface_class,       // bInterfaceClass
@@ -472,7 +516,15 @@ impl UsbDevice {
                         // to interface
                         // see https://www.beyondlogic.org/usbnutshell/usb6.shtml
                         // only low 8 bits are valid
-                        let intf = &self.interfaces[setup_packet.index as usize & 0xFF];
+                        let intf = self
+                            .interfaces
+                            .iter()
+                            .find(|v| v.interface_number == (setup_packet.index & 0xFF) as u8)
+                            .ok_or(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "Interface number is not valid",
+                            ))?;
+                        //let intf = &self.interfaces[setup_packet.index as usize & 0xFF];
                         let mut handler = intf.handler.lock().unwrap();
                         handler.handle_urb(intf, ep, transfer_buffer_length, setup_packet, out_data)
                     }
@@ -483,21 +535,17 @@ impl UsbDevice {
                         let mut handler = lock.lock().unwrap();
                         handler.handle_urb(transfer_buffer_length, setup_packet, out_data)
                     }
-                    (0b10000000, Some(GetStatus)) => {
-                        Ok(vec![0x00,0x00])
-                    }
-                    (0b10000001, Some(GetStatus)) => {
-                        Ok(vec![0x00,0x00])
-                    }
-                    (0b10000010, Some(GetStatus)) => {
-                        Ok(vec![0x00,0x00])
-                    }
+                    (0b10000000, Some(GetStatus)) => Ok(vec![0x00, 0x00]),
+                    (0b10000001, Some(GetStatus)) => Ok(vec![0x00, 0x00]),
+                    (0b10000010, Some(GetStatus)) => Ok(vec![0x00, 0x00]),
                     _ => unimplemented!("control in"),
                 }
             }
             (Some(Control), Out) => {
                 // control out
-                debug!("Control OUT setup={setup_packet:x?}");
+                debug!(
+                    "Control OUT setup={setup_packet:x?}, transfer_buffer_length={transfer_buffer_length}"
+                );
                 match (
                     setup_packet.request_type,
                     FromPrimitive::from_u8(setup_packet.request),
@@ -517,7 +565,15 @@ impl UsbDevice {
                         // to interface
                         // see https://www.beyondlogic.org/usbnutshell/usb6.shtml
                         // only low 8 bits are valid
-                        let intf = &self.interfaces[setup_packet.index as usize & 0xFF];
+                        let intf = self
+                            .interfaces
+                            .iter()
+                            .find(|v| v.interface_number == (setup_packet.index & 0xFF) as u8)
+                            .ok_or(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "Interface number is not valid",
+                            ))?;
+                        //let intf = &self.interfaces[setup_packet.index as usize & 0xFF];
                         let mut handler = intf.handler.lock().unwrap();
                         handler.handle_urb(intf, ep, transfer_buffer_length, setup_packet, out_data)
                     }
