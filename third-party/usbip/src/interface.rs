@@ -40,7 +40,10 @@ pub trait UsbInterfaceHandler: std::fmt::Debug {
         _setup: SetupPacket,
         _req: &[u8],
     ) -> std::io::Result<Vec<u8>> {
-        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Not implemented"))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Not implemented",
+        ))
     }
 
     fn get_device_capability_descriptors(&self) -> Vec<Vec<u8>> {

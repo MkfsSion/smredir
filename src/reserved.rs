@@ -5,6 +5,7 @@ use usbip::{SetupPacket, UsbEndpoint, UsbInterface, UsbInterfaceHandler};
 #[derive(Debug)]
 pub struct ReservedInterfaceHandler {}
 
+#[allow(dead_code)]
 impl ReservedInterfaceHandler {
     pub fn new() -> ReservedInterfaceHandler {
         Self {}
@@ -18,11 +19,11 @@ impl UsbInterfaceHandler for ReservedInterfaceHandler {
 
     fn handle_urb(
         &mut self,
-        interface: &UsbInterface,
-        ep: UsbEndpoint,
-        transfer_buffer_length: u32,
-        setup: SetupPacket,
-        req: &[u8],
+        _interface: &UsbInterface,
+        _ep: UsbEndpoint,
+        _transfer_buffer_length: u32,
+        _setup: SetupPacket,
+        _req: &[u8],
     ) -> std::io::Result<Vec<u8>> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

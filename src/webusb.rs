@@ -1,58 +1,38 @@
-use crate::device::{VendorControl, parseSetupPacket};
+use crate::device::ControlSetup;
 use log::{debug, error};
-use nusb::transfer::{Control, Direction, Recipient};
+use nusb::MaybeFuture;
+use nusb::transfer;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::io;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use usbip::{
     ClassCode, DescriptorType, SetupPacket, StandardRequest, UsbEndpoint, UsbInterface,
     UsbInterfaceHandler,
 };
 
-pub struct WebUSBInterfaceInternalHandler {
+pub struct WebUSBInterfaceHandler {
     device: nusb::Device,
     interface: nusb::Interface,
     interface_number: u8,
 }
 
-pub struct WebUSBInterfaceHandler {
-    handler: Arc<Mutex<Box<dyn VendorControl>>>,
-}
-
-impl WebUSBInterfaceHandler {
-    pub fn new(handler: Arc<Mutex<Box<dyn VendorControl>>>) -> Self {
-        Self { handler }
-    }
-}
-
 impl Debug for WebUSBInterfaceHandler {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "WebUSBInterfaceHandler")
     }
 }
 
-impl Debug for WebUSBInterfaceInternalHandler {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WebUSBInterfaceInternalHandler")
-    }
-}
-
-impl WebUSBInterfaceInternalHandler {
+impl WebUSBInterfaceHandler {
     pub fn new(device: nusb::Device, interface_number: u8) -> Result<Self, io::Error> {
         let webusb = device
             .active_configuration()
-            .map_err(|e| io::Error::from(e))?
+            .map_err(io::Error::from)?
             .interfaces()
             .find(|interface| {
-                match interface
+                interface
                     .alt_settings()
-                    .find(|setting| setting.class() == ClassCode::VendorSpecific as u8)
-                {
-                    Some(_) => true,
-                    None => false,
-                }
+                    .any(|setting| setting.class() == ClassCode::VendorSpecific as u8)
             })
             .ok_or(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -60,6 +40,7 @@ impl WebUSBInterfaceInternalHandler {
             ))?;
         let interface = device
             .claim_interface(webusb.interface_number())
+            .wait()
             .map_err(|e| io::Error::new(io::ErrorKind::ResourceBusy, e))?;
         Ok(Self {
             device,
@@ -69,39 +50,67 @@ impl WebUSBInterfaceInternalHandler {
     }
 }
 
-impl VendorControl for WebUSBInterfaceInternalHandler {
+fn control_string(control: &ControlSetup) -> String {
+    match control {
+        ControlSetup::In(control) => {
+            format!(
+                "ControlIn: control_type: {:0X?}, recipient: {:0X?}, request: {:0X}, value: {:0X}, index: {:0X}",
+                control.control_type,
+                control.recipient,
+                control.request,
+                control.value,
+                control.index
+            )
+        }
+        ControlSetup::Out(control) => {
+            format!(
+                "ControlOut: control_type: {:0X?}, recipient: {:0X?}, request: {:0X}, value: {:0X}, index: {:0X}, data: {:02X?}",
+                control.control_type,
+                control.recipient,
+                control.request,
+                control.value,
+                control.index,
+                control.data
+            )
+        }
+    }
+}
+impl UsbInterfaceHandler for WebUSBInterfaceHandler {
     fn handle_device_urb(
         &mut self,
         transfer_buffer_length: u32,
         setup: SetupPacket,
         req: &[u8],
     ) -> io::Result<Vec<u8>> {
-        match parseSetupPacket(&setup)? {
-            (Direction::In, control) => {
-                let mut buffer = vec![0u8; transfer_buffer_length as usize];
-                let size = self
+        let control = ControlSetup::new(&setup, Some(req))?;
+        match control {
+            ControlSetup::In(control) => {
+                let mut data = self
                     .interface
-                    .control_in_blocking(control, &mut buffer, Duration::from_secs(5))
-                    .map_err(|e| io::Error::from(e))?;
-                buffer.truncate(size);
-                Ok(buffer)
+                    .control_in(control, Duration::from_secs(5))
+                    .wait()
+                    .map_err(io::Error::from)?;
+                if data.len() > transfer_buffer_length as usize {
+                    data.truncate(transfer_buffer_length as usize);
+                }
+                Ok(data)
             }
-            (Direction::Out, control) => {
+            ControlSetup::Out(control) => {
                 self.interface
-                    .control_out_blocking(control, req, Duration::from_secs(5))
-                    .map_err(|e| io::Error::from(e))?;
+                    .control_out(control, Duration::from_secs(5))
+                    .wait()
+                    .map_err(io::Error::from)?;
                 Ok(vec![])
             }
         }
     }
 
     fn get_device_capability_descriptors(&self) -> Vec<Vec<u8>> {
-        let bos = match self.device.get_descriptor(
-            DescriptorType::BOS as u8,
-            0,
-            0,
-            Duration::from_secs(1),
-        ) {
+        let bos = match self
+            .device
+            .get_descriptor(DescriptorType::BOS as u8, 0, 0, Duration::from_secs(1))
+            .wait()
+        {
             Ok(bos) => bos,
             Err(e) => {
                 error!("Failed to get BOS descriptor from USB device: {}", e);
@@ -148,15 +157,6 @@ impl VendorControl for WebUSBInterfaceInternalHandler {
         }
         capability_descriptors
     }
-}
-
-fn control_string(control: &Control) -> String {
-    format!(
-        "Control: control_type: {:0X?}, recipient: {:0X?}, request: {:0X}, value: {:0X}, index: {:0X}",
-        control.control_type, control.recipient, control.request, control.value, control.index
-    )
-}
-impl UsbInterfaceHandler for WebUSBInterfaceInternalHandler {
     fn get_class_specific_descriptor(&self) -> Vec<u8> {
         Vec::new()
     }
@@ -169,36 +169,40 @@ impl UsbInterfaceHandler for WebUSBInterfaceInternalHandler {
         setup: SetupPacket,
         req: &[u8],
     ) -> std::io::Result<Vec<u8>> {
-        match parseSetupPacket(&setup)? {
-            (Direction::In, control) if control.request == StandardRequest::GetStatus as u8 => {
+        let control = ControlSetup::new(&setup, Some(req))?;
+        match control {
+            ControlSetup::In(control) if control.request == StandardRequest::GetStatus as u8 => {
                 Ok(vec![0x00, 0x00])
             }
-            (Direction::In, mut control) => {
-                let mut buffer = vec![0u8; transfer_buffer_length as usize];
-                if control.recipient == Recipient::Interface {
+            ControlSetup::In(mut control) => {
+                if control.recipient == transfer::Recipient::Interface {
                     control.index &= 0xFF00;
                     control.index |= self.interface_number as u16;
                 }
-                let size = self
+                let mut data = self
                     .interface
-                    .control_in_blocking(control, &mut buffer, Duration::from_secs(5))
-                    .map_err(|e| io::Error::from(e))?;
-                buffer.truncate(size);
-                Ok(buffer)
+                    .control_in(control, Duration::from_secs(5))
+                    .wait()
+                    .map_err(io::Error::from)?;
+                if data.len() > transfer_buffer_length as usize {
+                    data.truncate(transfer_buffer_length as usize);
+                }
+                Ok(data)
             }
-            (Direction::Out, mut control) => {
-                if control.recipient == Recipient::Interface {
+            ControlSetup::Out(mut control) => {
+                if control.recipient == transfer::Recipient::Interface {
                     control.index &= 0xFF00;
                     control.index |= self.interface_number as u16;
                 }
                 debug!(
                     "Out transfer control: {:02X?}, req: {:02X?}",
-                    control_string(&control),
+                    control_string(&ControlSetup::Out(control)),
                     req
                 );
                 self.interface
-                    .control_out_blocking(control, req, Duration::from_secs(5))
-                    .map_err(|e| io::Error::from(e))?;
+                    .control_out(control, Duration::from_secs(5))
+                    .wait()
+                    .map_err(io::Error::from)?;
                 Ok(vec![])
             }
         }
@@ -209,35 +213,13 @@ impl UsbInterfaceHandler for WebUSBInterfaceInternalHandler {
     }
 }
 
-impl UsbInterfaceHandler for WebUSBInterfaceHandler {
-    fn get_class_specific_descriptor(&self) -> Vec<u8> {
-        self.handler.lock().unwrap().get_class_specific_descriptor()
-    }
-
-    fn handle_urb(
-        &mut self,
-        interface: &UsbInterface,
-        ep: UsbEndpoint,
-        transfer_buffer_length: u32,
-        setup: SetupPacket,
-        req: &[u8],
-    ) -> std::io::Result<Vec<u8>> {
-        self.handler
-            .lock()
-            .unwrap()
-            .handle_urb(interface, ep, transfer_buffer_length, setup, req)
-    }
-
-    fn as_any(&mut self) -> &mut dyn Any {
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::device::ControlSetup;
     use crate::webusb::control_string;
     use log::{debug, error};
-    use nusb::transfer::{Control, ControlType, Recipient};
+    use nusb::MaybeFuture;
+    use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
     use std::io;
     use std::time::Duration;
     use usbip::DescriptorType;
@@ -272,7 +254,7 @@ mod tests {
                 other => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Unknown TransferStatus value 0x{:02X}", value),
+                        format!("Unknown TransferStatus value 0x{:02X}", other),
                     ));
                 }
             })
@@ -280,26 +262,27 @@ mod tests {
     }
 
     fn send_apdu(interface: &nusb::Interface, data: &[u8]) -> io::Result<()> {
-        let control = Control {
+        let control = ControlOut {
             control_type: ControlType::Vendor,
             recipient: Recipient::Interface,
             request: 0x0,
             value: 0x0,
             index: interface.interface_number() as u16,
+            data,
         };
         debug!(
             "Out transfer OUT control: {:02X?}, data: {:02X?}",
-            control_string(&control),
+            control_string(&ControlSetup::Out(control)),
             data
         );
         interface
-            .control_out_blocking(control, &data, Duration::from_secs(5))
+            .control_out(control, Duration::from_secs(5))
+            .wait()
             .map(|_| ())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     fn received_apdu(interface: &nusb::Interface) -> io::Result<Vec<u8>> {
-        let mut data = vec![0u8; 4096];
         loop {
             match current_transfer_state(interface)? {
                 TransferStatus::STATE_PROCESS
@@ -308,64 +291,85 @@ mod tests {
                 TransferStatus::STATE_SENDING_RESP => break,
             }
         }
-        let control = Control {
+        let control = ControlIn {
             control_type: ControlType::Vendor,
             recipient: Recipient::Interface,
             request: 0x1,
             value: 0x0,
             index: interface.interface_number() as u16,
+            length: 4096,
         };
-        let other = Control {
-            control_type: ControlType::Vendor,
-            recipient: Recipient::Interface,
-            request: 0x1,
-            value: 0x0,
-            index: interface.interface_number() as u16,
-        };
-        let size = interface
-            .control_in_blocking(control, &mut data, Duration::from_secs(5))
+        let other = control.clone();
+        let data = interface
+            .control_in(control, Duration::from_secs(5))
+            .wait()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        data.truncate(size);
         debug!(
             "Out transfer IN control: {:02X?}, data: {:02X?}",
-            control_string(&other),
+            control_string(&ControlSetup::In(other)),
             data
         );
         Ok(data)
     }
 
     fn current_transfer_state(interface: &nusb::Interface) -> io::Result<TransferStatus> {
-        let mut buf = [0u8; 1];
-        let size = interface
-            .control_in_blocking(
-                Control {
+        let data = interface
+            .control_in(
+                ControlIn {
                     control_type: ControlType::Vendor,
                     recipient: Recipient::Interface,
                     request: 0x02, // WEBUSB_REQ_STAT
                     value: 0x00,
                     index: interface.interface_number() as u16,
+                    length: 0x1,
                 },
-                &mut buf,
                 Duration::from_secs(5),
             )
+            .wait()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        if size != 1 {
+        if data.len() != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Invalid TransferStatus value size {}", size),
+                format!("Invalid TransferStatus value size {}", data.len()),
             ));
         }
-        TransferStatus::try_from(buf[0])
+        TransferStatus::try_from(data[0])
+    }
+
+    #[test]
+    fn test_ccid_claim() {
+        let device = nusb::list_devices()
+            .wait()
+            .unwrap()
+            .find(|dev| dev.vendor_id() == 0x20A0 && dev.product_id() == 0x42D4)
+            .unwrap();
+        let handle = device.open().wait().unwrap();
+        let ccid = handle
+            .active_configuration()
+            .unwrap()
+            .interfaces()
+            .find(|interface| {
+                interface
+                    .alt_settings()
+                    .find(|settings| settings.class() == 0x0B)
+                    .is_some()
+            })
+            .unwrap();
+        let _interface = handle
+            .claim_interface(ccid.interface_number())
+            .wait()
+            .expect_err("Should fail");
     }
 
     #[test]
     fn test_libusb() {
         env_logger::init();
         let device = nusb::list_devices()
+            .wait()
             .unwrap()
             .find(|dev| dev.vendor_id() == 0x20A0 && dev.product_id() == 0x42D4)
             .unwrap();
-        let handle = device.open().unwrap();
+        let handle = device.open().wait().unwrap();
         let webusb = handle
             .active_configuration()
             .unwrap()
@@ -377,7 +381,10 @@ mod tests {
                     .is_some()
             })
             .unwrap();
-        let interface = handle.claim_interface(webusb.interface_number()).unwrap();
+        let interface = handle
+            .claim_interface(webusb.interface_number())
+            .wait()
+            .unwrap();
         // let size = interface.control_out_blocking(Control {
         //     control_type: ControlType::Vendor,
         //     recipient: Recipient::Interface,
@@ -393,7 +400,11 @@ mod tests {
         // let result = received_apdu(&interface).unwrap();
         // error!("APDU result: {:02X?}", result);
         //error!("TransferStatus: {:?}", current_transfer_state(&interface).unwrap());
-        //send_apdu(&interface, &[0x00u8, 0xA4, 0x04, 0x00, 0x05, 0xF0, 0x00, 0x00, 0x00, 0x00]).unwrap();
+        send_apdu(
+            &interface,
+            &[0x00u8, 0xA4, 0x04, 0x00, 0x05, 0xF0, 0x00, 0x00, 0x00, 0x00],
+        )
+        .unwrap();
         //send_apdu(&interface, &[]).unwrap();
         // let mut status = current_transfer_state(&interface).unwrap();
         // error!("TransferStatus: {:?}", status);
@@ -404,8 +415,8 @@ mod tests {
         //let mut result = received_apdu(&interface).unwrap();
         //error!("APDU result: {:02X?}", result);
         //send_apdu(&interface, &[0x00, 0x41, 0x00, 0x00, 0x02]).unwrap();
-        //result = received_apdu(&interface).unwrap();
-        //error!("APDU result: {:02X?}, str: '{}'", result, String::from_utf8_lossy(&result[0..result.len()-2]));
+        let result = received_apdu(&interface).unwrap();
+        error!("APDU result: {:02X?}", result);
         // let bos = handle.get_descriptor(DescriptorType::BOS as u8, 0, 0, Duration::from_secs(5)).unwrap();
         // //let device_capabilities = handle.get_descriptor(0x10, 0, 0, Duration::from_secs(5)).unwrap();
         // println!("BOS: {:02X?}", bos);
@@ -427,6 +438,7 @@ mod tests {
                 0x0,
                 Duration::from_secs(5),
             )
+            .wait()
             .unwrap();
         println!("Configuration Descriptor:\n{:02X?}", conf_desc);
     }

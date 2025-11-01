@@ -1,9 +1,9 @@
 //! A library for running a USB/IP server
 
-use nusb::MaybeFuture;
 use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use nusb::MaybeFuture;
 use rusb::*;
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
@@ -102,17 +102,19 @@ impl UsbIpServer {
                     interface_protocol: alt_setting.protocol(),
                     interface_number: interfaces.len() as u8,
                     endpoints,
-                    string_interface: alt_setting.string_index().map(|v|v.get()).unwrap_or(0),
+                    string_interface: alt_setting.string_index().map(|v| v.get()).unwrap_or(0),
                     class_specific_descriptor: Vec::new(),
                     handler,
                 });
             }
 
             let path;
-            #[cfg(target_os = "windows")] {
+            #[cfg(target_os = "windows")]
+            {
                 path = device_info.instance_id().to_string_lossy().to_string();
             }
-            #[cfg(not(target_os = "windows"))] {
+            #[cfg(not(target_os = "windows"))]
+            {
                 path = format!(
                     "/sys/bus/{}/{}/{}",
                     device_info.busnum(),
@@ -122,14 +124,16 @@ impl UsbIpServer {
             }
 
             let bus_num;
-            #[cfg(target_os = "windows")] {
+            #[cfg(target_os = "windows")]
+            {
                 bus_num = match device_info.port_chain() {
-                    v if v.len() > 1 => v[v.len()-2],
+                    v if v.len() > 1 => v[v.len() - 2],
                     _ => 0,
                 }
             }
 
-            #[cfg(not(target_os = "windows"))] {
+            #[cfg(not(target_os = "windows"))]
+            {
                 bus_num = device_info.busnum;
             }
 
@@ -508,15 +512,21 @@ pub async fn handler<T: AsyncReadExt + AsyncWriteExt + Unpin>(
                                 } else {
                                     trace!("<-Resp {resp:02x?}, len={}", resp.len());
                                 }
-                                let mut response = UsbIpResponse::usbip_ret_submit_success(&header, 0, 0, resp, vec![]);
+                                let mut response = UsbIpResponse::usbip_ret_submit_success(
+                                    &header,
+                                    0,
+                                    0,
+                                    resp,
+                                    vec![],
+                                );
                                 // For OUT (host to device) transfer, actual_length should be bytes consumed
                                 // Set actuaal length to zero result in retransmission of same packet
                                 if out {
                                     match &mut response {
-                                        UsbIpResponse::UsbIpRetSubmit { actual_length, ..} => {
+                                        UsbIpResponse::UsbIpRetSubmit { actual_length, .. } => {
                                             *actual_length = data.len() as u32;
                                         }
-                                        _ => ()
+                                        _ => (),
                                     }
                                 }
                                 // if !out && (ep.attributes & EndpointAttributes::Interrupt as u8) != 0 {

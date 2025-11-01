@@ -1,7 +1,6 @@
 use crate::ccid_const;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt};
 use log::debug;
-use std::io::{Read, Write};
 use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Copy, Clone)]
@@ -79,9 +78,9 @@ pub trait Decode {
         Self: Sized;
 }
 
-impl Into<u8> for ICCVoltage {
-    fn into(self) -> u8 {
-        match self {
+impl From<ICCVoltage> for u8 {
+    fn from(value: ICCVoltage) -> Self {
+        match value {
             ICCVoltage::AUTO => 0x00,
             ICCVoltage::V_5_0 => 0x01,
             ICCVoltage::V_3_0 => 0x02,
@@ -127,9 +126,9 @@ pub enum SlotErrorRegister {
     InvalidParameter(u8),
 }
 
-impl Into<u8> for SlotErrorRegister {
-    fn into(self) -> u8 {
-        match self {
+impl From<SlotErrorRegister> for u8 {
+    fn from(value: SlotErrorRegister) -> Self {
+        match value {
             SlotErrorRegister::CommandAbort => ccid_const::CMD_ABORTED,
             SlotErrorRegister::ICCMute => ccid_const::ICC_MUTE,
             SlotErrorRegister::TransferParityError => ccid_const::XFR_PARITY_ERROR,
@@ -155,6 +154,7 @@ impl Into<u8> for SlotErrorRegister {
 
 impl From<u8> for SlotErrorRegister {
     fn from(value: u8) -> Self {
+        #[allow(unreachable_patterns)]
         match value {
             ccid_const::CMD_ABORTED => SlotErrorRegister::CommandAbort,
             ccid_const::ICC_MUTE => SlotErrorRegister::ICCMute,
@@ -198,9 +198,9 @@ impl ICCStatus {
     }
 }
 
-impl Into<u8> for ICCStatus {
-    fn into(self) -> u8 {
-        self.to_u8()
+impl From<ICCStatus> for u8 {
+    fn from(value: ICCStatus) -> Self {
+        value.to_u8()
     }
 }
 
@@ -234,9 +234,9 @@ impl CommandStatus {
     }
 }
 
-impl Into<u8> for CommandStatus {
-    fn into(self) -> u8 {
-        self.to_u8()
+impl From<CommandStatus> for u8 {
+    fn from(value: CommandStatus) -> Self {
+        value.to_u8()
     }
 }
 
@@ -268,6 +268,7 @@ pub enum SlotStatusRegister {
     // RFU | RFU
 }
 
+#[allow(dead_code)]
 impl SlotStatusRegister {
     pub fn ICCStatus(self) -> ICCStatus {
         ICCStatus::try_from(Into::<u8>::into(self) & 0x03).unwrap()
@@ -282,9 +283,9 @@ const fn combine_slot_status(icc: ICCStatus, command: CommandStatus) -> u8 {
     icc.to_u8() | (command.to_u8() << 6)
 }
 
-impl Into<u8> for SlotStatusRegister {
-    fn into(self) -> u8 {
-        match self {
+impl From<SlotStatusRegister> for u8 {
+    fn from(value: SlotStatusRegister) -> Self {
+        match value {
             SlotStatusRegister::ICCActiveSuccess => {
                 combine_slot_status(ICCStatus::Active, CommandStatus::Success)
             }
@@ -395,9 +396,9 @@ pub enum ICCProtocol {
     T1,
 }
 
-impl Into<u8> for ICCProtocol {
-    fn into(self) -> u8 {
-        match self {
+impl From<ICCProtocol> for u8 {
+    fn from(value: ICCProtocol) -> Self {
+        match value {
             ICCProtocol::T0 => 0x00,
             ICCProtocol::T1 => 0x01,
         }
@@ -422,9 +423,9 @@ pub enum ICCClockCommand {
     Stop,
 }
 
-impl Into<u8> for ICCClockCommand {
-    fn into(self) -> u8 {
-        match self {
+impl From<ICCClockCommand> for u8 {
+    fn from(value: ICCClockCommand) -> Self {
+        match value {
             ICCClockCommand::Restart => 0x00,
             ICCClockCommand::Stop => 0x01,
         }
@@ -451,13 +452,13 @@ pub enum T0APDUClassChange {
     Both,
 }
 
-impl Into<u8> for T0APDUClassChange {
-    fn into(self) -> u8 {
-        match self {
-            Self::None => 0x00,
-            Self::GetResponse => 0x01,
-            Self::Envelope => 0x02,
-            Self::Both => 0x03,
+impl From<T0APDUClassChange> for u8 {
+    fn from(value: T0APDUClassChange) -> Self {
+        match value {
+            T0APDUClassChange::None => 0x00,
+            T0APDUClassChange::GetResponse => 0x01,
+            T0APDUClassChange::Envelope => 0x02,
+            T0APDUClassChange::Both => 0x03,
         }
     }
 }
@@ -485,14 +486,14 @@ pub enum ICCMechanicalFunction {
     UnlockCard,
 }
 
-impl Into<u8> for ICCMechanicalFunction {
-    fn into(self) -> u8 {
-        match self {
-            Self::AcceptCard => 0x01,
-            Self::EjectCard => 0x02,
-            Self::CaptureCard => 0x03,
-            Self::LockCard => 0x04,
-            Self::UnlockCard => 0x05,
+impl From<ICCMechanicalFunction> for u8 {
+    fn from(value: ICCMechanicalFunction) -> Self {
+        match value {
+            ICCMechanicalFunction::AcceptCard => 0x01,
+            ICCMechanicalFunction::EjectCard => 0x02,
+            ICCMechanicalFunction::CaptureCard => 0x03,
+            ICCMechanicalFunction::LockCard => 0x04,
+            ICCMechanicalFunction::UnlockCard => 0x05,
         }
     }
 }
@@ -512,6 +513,7 @@ impl TryFrom<u8> for ICCMechanicalFunction {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum Command {
     PC_to_RDR_IccPowerOn {
@@ -979,7 +981,7 @@ impl Decode for Command {
                 )));
             }
         };
-        if !input.read_u8().is_err() {
+        if input.read_u8().is_ok() {
             return Err(CCIDError::command_error(
                 header,
                 SlotStatusRegister::ICCInactiveFailure,
@@ -1044,9 +1046,9 @@ pub enum ICCClockStatus {
     StoppedUnknown,
 }
 
-impl Into<u8> for ICCClockStatus {
-    fn into(self) -> u8 {
-        match self {
+impl From<ICCClockStatus> for u8 {
+    fn from(value: ICCClockStatus) -> Self {
+        match value {
             ICCClockStatus::Running => 0x00,
             ICCClockStatus::StoppedInL => 0x01,
             ICCClockStatus::StoppedInH => 0x02,

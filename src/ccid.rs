@@ -78,12 +78,7 @@ impl CCIDInterfaceHandler {
         ];
         let desc = device
             .active_configuration()
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Failed to get active configuration: {}", e),
-                )
-            })?
+            .map_err(|e| io::Error::other(format!("Failed to get active configuration: {}", e)))?
             .descriptors()
             .find(|d| {
                 d.descriptor_type() == 0x21 && d.descriptor_len() == 0x36 // CCID
@@ -98,48 +93,36 @@ impl CCIDInterfaceHandler {
         ccid_descriptor[19..19 + 8].copy_from_slice(&desc[19..19 + 8]);
         debug!("CCID descriptors: {:02X?}", ccid_descriptor);
         let context = pcsc::Context::establish(Scope::User).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "Failed to create PCSC context, status = '0x{:08X}'",
-                    e as u32
-                ),
-            )
+            io::Error::other(format!(
+                "Failed to create PCSC context, status = '0x{:08X}'",
+                e as u32
+            ))
         })?;
         let card = context
             .connect(reader_name, ShareMode::Exclusive, Protocols::T1)
             .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "Failed to connect to reader '{}', status = '0x{:08X}'",
-                        reader_name.to_string_lossy().to_string(),
-                        e as u32
-                    ),
-                )
+                io::Error::other(format!(
+                    "Failed to connect to reader '{}', status = '0x{:08X}'",
+                    reader_name.to_string_lossy(),
+                    e as u32
+                ))
             })?;
         debug!("Created reader '{}'", reader_name.to_string_lossy());
         let atr = card
             .get_attribute_owned(Attribute::AtrString)
             .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "Failed to get ATR from reader '{}', status = {:08X}",
-                        reader_name.to_string_lossy().to_string(),
-                        e as u32
-                    ),
-                )
+                io::Error::other(format!(
+                    "Failed to get ATR from reader '{}', status = {:08X}",
+                    reader_name.to_string_lossy(),
+                    e as u32
+                ))
             })?;
         if atr.len() < 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "ATR read from reader '{}' is too short, expects at least 2 bytes, got {} bytes",
-                    reader_name.to_string_lossy().to_string(),
-                    atr.len()
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "ATR read from reader '{}' is too short, expects at least 2 bytes, got {} bytes",
+                reader_name.to_string_lossy(),
+                atr.len()
+            )));
         }
 
         let parameter = (|| {
@@ -149,7 +132,7 @@ impl CCIDInterfaceHandler {
                 _ => {
                     debug!(
                         "TS of ATR of reader '{}' has unknown value 0x{:02X}",
-                        reader_name.to_string_lossy().to_string(),
+                        reader_name.to_string_lossy(),
                         atr[0]
                     );
                     return None;
@@ -158,78 +141,72 @@ impl CCIDInterfaceHandler {
             if atr[1] & 0x10 == 0 {
                 debug!(
                     "TA1 bytes does not exists in ATR of reader '{}'",
-                    reader_name.to_string_lossy().to_string()
+                    reader_name.to_string_lossy()
                 );
                 return None;
             }
             if atr[1] & 0x40 == 0 {
                 debug!(
                     "TC1 bytes does not exists in ATR of reader '{}'",
-                    reader_name.to_string_lossy().to_string()
+                    reader_name.to_string_lossy()
                 );
             }
             let ta1_offset = 2usize; // If ATR has TA1, it must follow T0 byte
-            let tc1_offset;
-            let td1_offset;
-            match (atr[1] & 0xF0) >> 4 {
+            let tc1_offset = match (atr[1] & 0xF0) >> 4 {
                 0x8 | 0xA => {
                     debug!(
                         "Only TD1 byte exists in ATR of reader '{}'",
-                        reader_name.to_string_lossy().to_string()
+                        reader_name.to_string_lossy()
                     );
                     return None;
                 }
                 0x0 | 0x2 => {
                     debug!(
                         "None of TA1, TC1, TD1  bytes exist in ATR of reader '{}'",
-                        reader_name.to_string_lossy().to_string()
+                        reader_name.to_string_lossy()
                     );
                     return None;
                 }
                 0x1 | 0x3 => {
                     debug!(
                         "Only TA1 byte exists in ATR of reader '{}'",
-                        reader_name.to_string_lossy().to_string()
+                        reader_name.to_string_lossy()
                     );
                     return None;
                 }
                 0x9 | 0xB => {
                     debug!(
                         "Only TA1 and TD1 byte exists in ATR of reader '{}'",
-                        reader_name.to_string_lossy().to_string()
+                        reader_name.to_string_lossy()
                     );
                     return None;
                 }
                 0x4 | 0x6 => {
                     debug!(
                         "Only TC1 byte exists in ATR of reader '{}'",
-                        reader_name.to_string_lossy().to_string()
+                        reader_name.to_string_lossy()
                     );
                     return None;
                 }
                 0xC | 0xE => {
                     debug!(
                         "Only TC1 and TD1 byte exists in ATR of reader '{}'",
-                        reader_name.to_string_lossy().to_string()
+                        reader_name.to_string_lossy()
                     );
                     return None;
                 }
                 0x5 | 0x7 => {
                     debug!(
                         "Only TA1 and TC1 byte exists in ATR of reader '{}'",
-                        reader_name.to_string_lossy().to_string()
+                        reader_name.to_string_lossy()
                     );
                     return None;
                 }
-                0xD => {
-                    tc1_offset = ta1_offset + 1;
-                }
-                0xF => {
-                    tc1_offset = ta1_offset + 2;
-                }
+                0xD => ta1_offset + 1,
+                0xF => ta1_offset + 2,
                 _ => unreachable!(),
-            }
-            td1_offset = tc1_offset + 1;
+            };
+            let td1_offset = tc1_offset + 1;
             if ta1_offset >= atr.len() {
                 debug!(
                     "ATR is too short to contain TA1 byte, TA1 offset = {}, length = {}",
@@ -266,29 +243,20 @@ impl CCIDInterfaceHandler {
                 (false, false) => 0,
             } | 0x10;
             let extra_guard_time = tc1;
-            let td2_offset;
-            match (td1 & 0xF0) >> 4 {
-                0x8 | 0xC => {
-                    td2_offset = td1_offset + 1;
-                }
-                0x9 | 0xA => {
-                    td2_offset = td1_offset + 2;
-                }
-                0xB | 0xD | 0xE => {
-                    td2_offset = td1_offset + 3;
-                }
-                0xF => {
-                    td2_offset = td1_offset + 4;
-                }
+            let td2_offset = match (td1 & 0xF0) >> 4 {
+                0x8 | 0xC => td1_offset + 1,
+                0x9 | 0xA => td1_offset + 2,
+                0xB | 0xD | 0xE => td1_offset + 3,
+                0xF => td1_offset + 4,
                 v => {
                     debug!(
                         "ATR of of reader '{}' does not contain TD2 byte, since Y1 is 0x{:X}",
-                        reader_name.to_string_lossy().to_string(),
+                        reader_name.to_string_lossy(),
                         v
                     );
                     return None;
                 }
-            }
+            };
             if td2_offset >= atr.len() {
                 debug!(
                     "ATR is too short to contain TD2 byte, TD2 offset = {}, length = {}",
@@ -302,14 +270,14 @@ impl CCIDInterfaceHandler {
                 0x1 | 0x5 | 0x9 | 0xD => {
                     debug!(
                         "Only TA3 byte exists in ATR of reader '{}'",
-                        reader_name.to_string_lossy().to_string()
+                        reader_name.to_string_lossy()
                     );
                     return None;
                 }
                 0x2 | 0x6 | 0xA | 0xE => {
                     debug!(
                         "Only TB3 byte exists in ATR of reader '{}'",
-                        reader_name.to_string_lossy().to_string()
+                        reader_name.to_string_lossy()
                     );
                     return None;
                 }
@@ -317,7 +285,7 @@ impl CCIDInterfaceHandler {
                 _ => {
                     debug!(
                         "Neither TA3 nor TB3 bytes exist in ATR of reader '{}'",
-                        reader_name.to_string_lossy().to_string()
+                        reader_name.to_string_lossy()
                     );
                 }
             }
@@ -392,7 +360,7 @@ impl UsbInterfaceHandler for CCIDInterfaceHandler {
         setup: SetupPacket,
         req: &[u8],
     ) -> io::Result<Vec<u8>> {
-        return if ep.is_ep0() {
+        if ep.is_ep0() {
             match setup.request {
                 // Abort
                 0x01 => {
@@ -652,7 +620,7 @@ impl UsbInterfaceHandler for CCIDInterfaceHandler {
                     Ok(vec![])
                 }
             }
-        };
+        }
     }
 
     fn as_any(&mut self) -> &mut dyn Any {
