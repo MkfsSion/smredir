@@ -347,6 +347,17 @@ impl CCIDInterfaceHandler {
     }
 }
 
+impl CCIDInterfaceHandler {
+    pub fn drop_card(&mut self) {
+        if self.card.get_mut().is_some() {
+            if let Err(e) = self.card.take().unwrap().disconnect(Disposition::ResetCard) {
+                error!("Failed to disconnect reset card: {:?}", e.1);
+            }
+            debug!("PC_to_RDR_IccPowerOff: Disconnected reset card");
+        }
+    }
+}
+
 impl UsbInterfaceHandler for CCIDInterfaceHandler {
     fn get_class_specific_descriptor(&self) -> Vec<u8> {
         self.ccid_descriptor.clone()
@@ -477,15 +488,7 @@ impl UsbInterfaceHandler for CCIDInterfaceHandler {
                                     header.bError = SlotErrorRegister::UnsupportedCommand;
                                     *bClockStatus = ICCClockStatus::Running;
                                 }
-                                if self.card.get_mut().is_some() {
-                                    if let Err(e) =
-                                        self.card.take().unwrap().disconnect(Disposition::ResetCard)
-                                    {
-                                        error!("Failed to disconnect reset card: {:?}", e.1);
-                                    }
-                                    debug!("PC_to_RDR_IccPowerOff: Disconnected reset card");
-                                }
-                                //self.card.into_inner().disconnect(Disposition::LeaveCard);
+                                self.drop_card();
                                 response = resp;
                             }
                             ccid_proto::Command::PC_to_RDR_IccPowerOn { header, .. } => {

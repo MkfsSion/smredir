@@ -1,3 +1,4 @@
+use crate::ccid::CCIDInterfaceHandler;
 use crate::device::ControlSetup;
 use log::{debug, error};
 use nusb::MaybeFuture;
@@ -5,6 +6,8 @@ use nusb::transfer;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::io;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use usbip::{
     ClassCode, DescriptorType, SetupPacket, StandardRequest, UsbEndpoint, UsbInterface,
@@ -15,6 +18,7 @@ pub struct WebUSBInterfaceHandler {
     device: nusb::Device,
     interface: nusb::Interface,
     interface_number: u8,
+    ccid: Arc<Mutex<Box<dyn UsbInterfaceHandler + Send>>>,
 }
 
 impl Debug for WebUSBInterfaceHandler {
@@ -24,7 +28,11 @@ impl Debug for WebUSBInterfaceHandler {
 }
 
 impl WebUSBInterfaceHandler {
-    pub fn new(device: nusb::Device, interface_number: u8) -> Result<Self, io::Error> {
+    pub fn new(
+        device: nusb::Device,
+        interface_number: u8,
+        ccid: Arc<Mutex<Box<dyn UsbInterfaceHandler + Send>>>,
+    ) -> Result<Self, io::Error> {
         let webusb = device
             .active_configuration()
             .map_err(io::Error::from)?
@@ -46,6 +54,7 @@ impl WebUSBInterfaceHandler {
             device,
             interface,
             interface_number,
+            ccid,
         })
     }
 }
@@ -175,6 +184,13 @@ impl UsbInterfaceHandler for WebUSBInterfaceHandler {
                 Ok(vec![0x00, 0x00])
             }
             ControlSetup::In(mut control) => {
+                self.ccid
+                    .lock()
+                    .unwrap()
+                    .as_any()
+                    .downcast_mut::<CCIDInterfaceHandler>()
+                    .unwrap()
+                    .drop_card();
                 if control.recipient == transfer::Recipient::Interface {
                     control.index &= 0xFF00;
                     control.index |= self.interface_number as u16;
@@ -190,6 +206,13 @@ impl UsbInterfaceHandler for WebUSBInterfaceHandler {
                 Ok(data)
             }
             ControlSetup::Out(mut control) => {
+                self.ccid
+                    .lock()
+                    .unwrap()
+                    .as_any()
+                    .downcast_mut::<CCIDInterfaceHandler>()
+                    .unwrap()
+                    .drop_card();
                 if control.recipient == transfer::Recipient::Interface {
                     control.index &= 0xFF00;
                     control.index |= self.interface_number as u16;

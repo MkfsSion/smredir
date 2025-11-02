@@ -46,7 +46,7 @@ async fn main() {
             )
         })
         .target(env_logger::Target::Pipe(target))
-        .filter(None, LevelFilter::Off)
+        .filter(None, LevelFilter::Trace)
         .init();
     let usb_device = nusb::list_devices()
         .wait()
@@ -61,7 +61,7 @@ async fn main() {
     )
         as Box<dyn usbip::UsbInterfaceHandler + Send>));
     let webusb_handler = Arc::new(Mutex::new(Box::new(
-        WebUSBInterfaceHandler::new(usb_device.clone(), 1)
+        WebUSBInterfaceHandler::new(usb_device.clone(), 1, ccid_handler.clone())
             .expect("Failed to create WebUSB InterfaceHandler"),
     ) as Box<dyn UsbInterfaceHandler + Send>));
 

@@ -159,9 +159,10 @@ impl UsbInterfaceHandler for FIDOInterfaceHandler {
             match ep.address {
                 0x82 => {
                     // interrupt IN
-                    let mut report = vec![0x8; transfer_buffer_length as usize];
+                    let mut report = vec![0u8; transfer_buffer_length as usize];
                     match self.device.read_timeout(&mut report, 4) {
                         Ok(v) => {
+                            debug!("FIDO Interrupt IN: Read {:0X?} bytes from device", v);
                             report.truncate(v);
                             Ok(report)
                         }
